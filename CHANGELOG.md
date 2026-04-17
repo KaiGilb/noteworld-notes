@@ -1,5 +1,23 @@
 # Changelog
 
+## [5.0.0] - 2026-04-17
+### Breaking — single `ur` namespace, `solidFetch` param removed
+- All four composables now import only `{ ur }` from `@kaigilb/twinpod-client`; no `solidFetch` parameter.
+- `useTwinPodNoteCreate({ typeUri })` — removed `solidFetch` first arg; uses `ur.*` internally.
+- `useTwinPodNoteSave({ predicateUri, typeUri })` — removed `solidFetch` first arg; uses `ur.*` internally.
+- `useTwinPodNoteRead({ predicateUri })` — removed `solidFetch` first arg; removed Inrupt helpers entirely.
+  - Rewrote to use `ur.fetchAndSaveTurtle(url, true)` + `ur.rdfStore.statementsMatching` instead of `getSolidDataset`/`getThing`/`getStringNoLocaleAll`.
+  - 404 from `fetchAndSaveTurtle` → `error.type = 'not-found'`; other HTTP errors → `error.type = 'http'`.
+- `useTwinPodNoteSearch({ conceptName, lang })` — removed `solidFetch` first arg; `ur.searchAndGetURIs(podRoot, conceptName, options)` new call signature (podRoot explicit first param, options object).
+
+## [4.0.0] - 2026-04-15
+### Breaking — Stack B Turtle pipeline, Solid container model
+- All four composables now accept `solidFetch` as first arg (built from `createSolidFetch`).
+- `useTwinPodNoteCreate(solidFetch, { typeUri })` — creates note at `{podRoot}/t/` via Stack B (blank node → storeToTurtle → modifyTurtle → PUT text/turtle).
+- `useTwinPodNoteSave(solidFetch, { predicateUri, typeUri })` — persists text via Stack B (PATCH text/turtle).
+- `useTwinPodNoteRead(solidFetch, { predicateUri })` — reads text via `getSolidDataset`/`getThing`/`getStringNoLocaleAll`; last value is current (TwinPod state history).
+- `useTwinPodNoteSearch(solidFetch, { conceptName, lang })` — searches via `searchAndGetURIs(solidFetch, podRoot, conceptName, options)`.
+
 ## [3.0.0] - 2026-04-15
 ### Breaking changes
 - `useTwinPodNoteCreate` now creates notes via `PATCH {podRoot}/node/Substance` with `Content-Type: application/sparql-update` and body `INSERT DATA { <client-minted-uri> a <neo:a_note> . }`.

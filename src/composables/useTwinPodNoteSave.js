@@ -1,16 +1,13 @@
 // UNIT_TYPE=Hook
 
 /**
- * Persists a note's text to its existing TwinPod resource using the Stack B
- * rdflib Turtle pipeline.
+ * Persists a note's text to its existing TwinPod resource.
  *
- * Pipeline: build triples in a temp $rdf.graph() → storeToTurtle → modifyTurtle
- * → uploadTurtleToResource (PATCH text/turtle to the existing resource URI).
+ * Builds the Turtle string directly (bypassing rdflib serialize + modifyTurtle)
+ * to avoid modifyTurtle corrupting multi-line text — rdflib serialises long strings
+ * as triple-quoted literals ("""…"""), and modifyTurtle's replaceAll('"""', '"')
+ * breaks them. The text is manually escaped for Turtle single-line string syntax.
  *
- * Rebuilds the full note Turtle (rdf:type + predicate) and PATCHes it,
- * matching the Stack B creation pattern from useTwinPodNoteCreate.
- *
- * @param {Function} solidFetch - Authenticated Solid-style fetch.
  * @param {object} [options]
  * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate for the note body.
  * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
@@ -26,18 +23,28 @@
  */
 
 import { ref } from 'vue'
-import {
-  $rdf, NS,
-  getBlankNode,
-  storeToTurtle,
-  modifyTurtle,
-  uploadTurtleToResource
-} from '@kaigilb/twinpod-client'
+import { ur } from '@kaigilb/twinpod-client'
 
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
 const DEFAULT_TYPE_URI = 'http://schema.org/Note'
 
-export function useTwinPodNoteSave(solidFetch, { predicateUri = DEFAULT_TEXT_PREDICATE, typeUri = DEFAULT_TYPE_URI } = {}) {
+function escapeTurtleString(str) {
+  let result = ''
+  for (const char of str) {
+    const code = char.codePointAt(0)
+    if (char === '\\') { result += '\\\\'; continue }
+    if (char === '"') { result += '\\"'; continue }
+    if (char === '\n') { result += '\\n'; continue }
+    if (char === '\r') { result += '\\r'; continue }
+    if (char === '\t') { result += '\\t'; continue }
+    if (code > 0xFFFF) { result += `\\U${code.toString(16).padStart(8, '0').toUpperCase()}`; continue }
+    if (code > 0x7E) { result += `\\u${code.toString(16).padStart(4, '0').toUpperCase()}`; continue }
+    result += char
+  }
+  return result
+}
+
+export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, typeUri = DEFAULT_TYPE_URI } = {}) {
   const saving = ref(false)
   const saved = ref(false)
   const error = ref(null)
@@ -57,22 +64,10 @@ export function useTwinPodNoteSave(solidFetch, { predicateUri = DEFAULT_TEXT_PRE
     error.value = null
 
     try {
-      // Step 1 — Blank node for the note subject
-      const { node: noteBlank } = getBlankNode($rdf, 'Save: ' + noteResourceUrl)
+      const safeText = text.trim() !== '' ? text : ' '
+      const turtle = `@prefix schema: <http://schema.org/> .\n_:t1 a schema:Note ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
 
-      // Step 2 — Build triples in a temp store
-      const tempStore = $rdf.graph()
-      const add = (s, p, o) => tempStore.add(s, p, o, $rdf.defaultGraph())
-
-      add(noteBlank, NS.RDF('type'), $rdf.sym(typeUri))
-      add(noteBlank, $rdf.sym(predicateUri), $rdf.literal(text))
-
-      // Step 3 — Serialize and clean
-      let turtle = storeToTurtle($rdf, tempStore, '')
-      turtle = modifyTurtle(turtle)
-
-      // Step 4 — PATCH to TwinPod
-      const result = await uploadTurtleToResource(solidFetch, noteResourceUrl, turtle, { returnResponse: true })
+      const result = await ur.uploadTurtleToResource(noteResourceUrl, turtle, { returnResponse: true })
 
       if (!result.ok) {
         error.value = { type: 'http', status: result.status, message: `Save failed with HTTP ${result.status}` }
@@ -80,6 +75,7 @@ export function useTwinPodNoteSave(solidFetch, { predicateUri = DEFAULT_TEXT_PRE
       }
 
       saved.value = true
+      try { localStorage.setItem('notetext:' + noteResourceUrl, text) } catch { /* ignore */ }
       return true
     } catch (e) {
       error.value = { type: 'network', message: e?.message || String(e) }

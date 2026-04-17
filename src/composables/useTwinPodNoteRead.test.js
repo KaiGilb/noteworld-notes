@@ -1,143 +1,170 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
-const getSolidDataset = vi.fn()
-const getThing = vi.fn()
-const getStringNoLocaleAll = vi.fn()
+const { mockFetchAndSaveTurtle, mockStatementsMatching, mockRdfStoreSym, mock$rfSym } = vi.hoisted(() => ({
+  mockFetchAndSaveTurtle: vi.fn(),
+  mockStatementsMatching: vi.fn(),
+  mockRdfStoreSym: vi.fn((val) => ({ value: val, termType: 'NamedNode' })),
+  mock$rfSym: vi.fn((val) => ({ value: val, termType: 'NamedNode' })),
+}))
 
-vi.mock('@kaigilb/twinpod-client/write', () => ({
-  getSolidDataset: (...args) => getSolidDataset(...args),
-  getThing: (...args) => getThing(...args),
-  getStringNoLocaleAll: (...args) => getStringNoLocaleAll(...args)
+vi.mock('@kaigilb/twinpod-client', () => ({
+  ur: {
+    fetchAndSaveTurtle: (...args) => mockFetchAndSaveTurtle(...args),
+    rdfStore: {
+      sym: (...args) => mockRdfStoreSym(...args),
+      statementsMatching: (...args) => mockStatementsMatching(...args),
+    },
+    $rdf: {
+      sym: (...args) => mock$rfSym(...args),
+    },
+  }
 }))
 
 import { useTwinPodNoteRead } from './useTwinPodNoteRead.js'
 
 const POD = 'https://tst-first.demo.systemtwin.com'
-const NOTE_URL = `${POD}/notes/t_note_123_abcd`
-const THING_URL = `${NOTE_URL}#note`
+const NOTE_URL = `${POD}/t/t_note_123_abcd`
 const DEFAULT_PRED = 'http://schema.org/text'
 
-const fakeSolidFetch = vi.fn()
+function makeStatement(value) {
+  return { object: { value } }
+}
 
 beforeEach(() => {
-  getSolidDataset.mockReset()
-  getThing.mockReset()
-  getStringNoLocaleAll.mockReset()
-  getSolidDataset.mockResolvedValue({ __kind: 'dataset' })
-  getThing.mockReturnValue({ __kind: 'thing', url: THING_URL })
-  getStringNoLocaleAll.mockReturnValue(['loaded text'])
+  mockFetchAndSaveTurtle.mockReset()
+  mockFetchAndSaveTurtle.mockResolvedValue(undefined)
+  mockStatementsMatching.mockReset()
+  mockStatementsMatching.mockReturnValue([makeStatement('loaded text')])
+  mockRdfStoreSym.mockReset()
+  mockRdfStoreSym.mockImplementation((val) => ({ value: val, termType: 'NamedNode' }))
+  mock$rfSym.mockReset()
+  mock$rfSym.mockImplementation((val) => ({ value: val, termType: 'NamedNode' }))
 })
 
 describe('useTwinPodNoteRead — initial state', () => {
   test('text starts null', () => {
-    const { text } = useTwinPodNoteRead(fakeSolidFetch)
+    const { text } = useTwinPodNoteRead()
     expect(text.value).toBeNull()
   })
   test('loading starts false', () => {
-    const { loading } = useTwinPodNoteRead(fakeSolidFetch)
+    const { loading } = useTwinPodNoteRead()
     expect(loading.value).toBe(false)
   })
   test('error starts null', () => {
-    const { error } = useTwinPodNoteRead(fakeSolidFetch)
+    const { error } = useTwinPodNoteRead()
     expect(error.value).toBeNull()
   })
 })
 
 describe('useTwinPodNoteRead — success', () => {
-  test('fetches the dataset at the resource URL', async () => {
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+  // Spec: F.Edit_Note — loads resource via ur.fetchAndSaveTurtle with force=true
+  test('calls ur.fetchAndSaveTurtle with the resource URL and force=true', async () => {
+    const { loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
-    expect(getSolidDataset).toHaveBeenCalledTimes(1)
-    expect(getSolidDataset.mock.calls[0][0]).toBe(NOTE_URL)
-    expect(getSolidDataset.mock.calls[0][1]).toEqual({ fetch: fakeSolidFetch })
+    expect(mockFetchAndSaveTurtle).toHaveBeenCalledTimes(1)
+    expect(mockFetchAndSaveTurtle.mock.calls[0][0]).toBe(NOTE_URL)
+    expect(mockFetchAndSaveTurtle.mock.calls[0][1]).toBe(true)
   })
 
-  test('retrieves the Thing at {noteUrl}#note', async () => {
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
-    await loadNote(NOTE_URL)
-    expect(getThing.mock.calls[0][1]).toBe(THING_URL)
-  })
-
-  test('returns the string value with default predicate', async () => {
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+  // Spec: F.Edit_Note — current text is the last statement in temporal serialisation order
+  test('queries rdfStore with the predicateUri and returns the last value', async () => {
+    const { loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('loaded text')
-    expect(getStringNoLocaleAll.mock.calls[0][1]).toBe(DEFAULT_PRED)
+    expect(mockStatementsMatching).toHaveBeenCalledTimes(1)
   })
 
+  // Spec: F.Edit_Note — predicateUri option overrides the default schema:text
+  test('queries rdfStore with a custom predicateUri when provided', async () => {
+    const { loadNote } = useTwinPodNoteRead({ predicateUri: 'https://example.com/p' })
+    await loadNote(NOTE_URL)
+    expect(mock$rfSym).toHaveBeenCalledWith('https://example.com/p')
+  })
+
+  // Spec: F.Edit_Note — text ref reflects the loaded note content
   test('updates the text ref after success', async () => {
-    const { text, loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+    const { text, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(text.value).toBe('loaded text')
   })
 
-  test('returns empty string when predicate is absent', async () => {
-    getStringNoLocaleAll.mockReturnValueOnce([])
-    const { loadNote, text } = useTwinPodNoteRead(fakeSolidFetch)
+  // Spec: F.Edit_Note — returns empty string when no text predicate exists on the resource
+  test('returns empty string when no statements are found', async () => {
+    mockStatementsMatching.mockReturnValueOnce([])
+    const { loadNote, text } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('')
     expect(text.value).toBe('')
   })
 
-  test('returns the last value when the predicate has multiple values (TwinPod state history)', async () => {
-    getStringNoLocaleAll.mockReturnValueOnce([' ', 'first edit', 'latest edit'])
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+  // Spec: F.Edit_Note — TwinPod state history: multiple values present, current is the last one
+  test('returns the last value when multiple statements exist (TwinPod state history)', async () => {
+    mockStatementsMatching.mockReturnValueOnce([
+      makeStatement(' '),
+      makeStatement('first edit'),
+      makeStatement('latest edit'),
+    ])
+    const { loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('latest edit')
   })
-
-  test('accepts a custom predicateUri', async () => {
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch, { predicateUri: 'https://example.com/p' })
-    await loadNote(NOTE_URL)
-    expect(getStringNoLocaleAll.mock.calls[0][1]).toBe('https://example.com/p')
-  })
 })
 
-describe('useTwinPodNoteRead — state history edge cases (VATester gap)', () => {
+describe('useTwinPodNoteRead — state history edge cases', () => {
   // TwinPod never overwrites: after many edits a note carries N historical values
-  // in document order. The read path must always pick the LAST value regardless of
-  // how many prior values exist, and must not be fooled by the single-space
-  // placeholder that F.Create_Note writes at creation time.
+  // in document order. The read path must always pick the LAST value.
+  // Spec: F.Edit_Note — state history: current value supersedes the creation placeholder
   test('ignores the single-space placeholder when later edits exist', async () => {
-    getStringNoLocaleAll.mockReturnValueOnce([' ', 'real content'])
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+    mockStatementsMatching.mockReturnValueOnce([makeStatement(' '), makeStatement('real content')])
+    const { loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('real content')
   })
 
+  // Spec: F.Edit_Note — fresh note returns ' ' placeholder so editor textarea shows a value
   test('returns the placeholder space when it is the only value on a fresh note', async () => {
-    // A freshly-created note has only the ' ' placeholder — read must surface it
-    // so the editor textarea doesn't show "null".
-    getStringNoLocaleAll.mockReturnValueOnce([' '])
-    const { loadNote, text } = useTwinPodNoteRead(fakeSolidFetch)
+    mockStatementsMatching.mockReturnValueOnce([makeStatement(' ')])
+    const { loadNote, text } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe(' ')
     expect(text.value).toBe(' ')
   })
 
   test('handles a long history without throwing (10 historical values)', async () => {
-    const history = Array.from({ length: 10 }, (_, i) => `edit ${i}`)
-    getStringNoLocaleAll.mockReturnValueOnce(history)
-    const { loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+    const history = Array.from({ length: 10 }, (_, i) => makeStatement(`edit ${i}`))
+    mockStatementsMatching.mockReturnValueOnce(history)
+    const { loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('edit 9')
   })
 })
 
 describe('useTwinPodNoteRead — input validation', () => {
+  // Spec: F.Edit_Note — loadNote rejects empty noteResourceUrl with invalid-input error
   test('returns null and sets error when noteResourceUrl is empty', async () => {
-    const { error, loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+    const { error, loadNote } = useTwinPodNoteRead()
     const value = await loadNote('')
     expect(value).toBeNull()
     expect(error.value?.type).toBe('invalid-input')
-    expect(getSolidDataset).not.toHaveBeenCalled()
+    expect(mockFetchAndSaveTurtle).not.toHaveBeenCalled()
+  })
+
+  // Spec: F.Edit_Note — invalid-input must cover null noteResourceUrl
+  test('returns null and sets error when noteResourceUrl is null', async () => {
+    const { error, loadNote } = useTwinPodNoteRead()
+    const value = await loadNote(null)
+    expect(value).toBeNull()
+    expect(error.value?.type).toBe('invalid-input')
+    expect(mockFetchAndSaveTurtle).not.toHaveBeenCalled()
   })
 })
 
 describe('useTwinPodNoteRead — not found', () => {
-  test('sets error.type to not-found when the Thing is missing', async () => {
-    getThing.mockReturnValueOnce(null)
-    const { error, loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+  test('sets error.type to not-found on 404 from fetchAndSaveTurtle', async () => {
+    const err = new Error('Not Found')
+    err.statusCode = 404
+    mockFetchAndSaveTurtle.mockRejectedValueOnce(err)
+    const { error, loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBeNull()
     expect(error.value?.type).toBe('not-found')
@@ -145,20 +172,56 @@ describe('useTwinPodNoteRead — not found', () => {
 })
 
 describe('useTwinPodNoteRead — HTTP error', () => {
-  test('sets error.type to http on rejection with statusCode', async () => {
-    const err = new Error('Not Found')
-    err.statusCode = 404
-    getSolidDataset.mockRejectedValueOnce(err)
-    const { error, loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+  test('sets error.type to http on rejection with a non-404 statusCode', async () => {
+    const err = new Error('Forbidden')
+    err.statusCode = 403
+    mockFetchAndSaveTurtle.mockRejectedValueOnce(err)
+    const { error, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(error.value?.type).toBe('http')
-    expect(error.value?.status).toBe(404)
+    expect(error.value?.status).toBe(403)
   })
 
   test('sets error.type to network on rejection without statusCode', async () => {
-    getSolidDataset.mockRejectedValueOnce(new Error('Failed to fetch'))
-    const { error, loadNote } = useTwinPodNoteRead(fakeSolidFetch)
+    mockFetchAndSaveTurtle.mockRejectedValueOnce(new Error('Failed to fetch'))
+    const { error, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(error.value?.type).toBe('network')
+  })
+
+  test('loading is false after error', async () => {
+    mockFetchAndSaveTurtle.mockRejectedValueOnce(new Error('boom'))
+    const { loading, loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    expect(loading.value).toBe(false)
+  })
+})
+
+describe('useTwinPodNoteRead — ur namespace migration (no solidFetch)', () => {
+  // Spec: single ur namespace — composable must accept zero required parameters (no solidFetch param)
+  test('loadNote works without any solidFetch parameter', async () => {
+    const { loadNote } = useTwinPodNoteRead()
+    const value = await loadNote(NOTE_URL)
+    expect(value).toBe('loaded text')
+    expect(mockFetchAndSaveTurtle).toHaveBeenCalledTimes(1)
+  })
+
+  // Spec: ur namespace migration — document graph scoped query via ur.rdfStore.sym
+  test('calls ur.rdfStore.sym with the noteResourceUrl to scope the query to the document graph', async () => {
+    const { loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    expect(mockRdfStoreSym).toHaveBeenCalledWith(NOTE_URL)
+  })
+
+  // Spec: ur namespace migration — loading transition during fetch
+  test('loading is true while ur.fetchAndSaveTurtle is in progress', async () => {
+    let resolveFetch
+    mockFetchAndSaveTurtle.mockImplementation(() => new Promise(r => { resolveFetch = r }))
+    const { loading, loadNote } = useTwinPodNoteRead()
+    const promise = loadNote(NOTE_URL)
+    expect(loading.value).toBe(true)
+    resolveFetch()
+    await promise
+    expect(loading.value).toBe(false)
   })
 })

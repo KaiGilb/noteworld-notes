@@ -1,17 +1,17 @@
 // UNIT_TYPE=Hook
 
 /**
- * Reads a note's current text from its Solid resource on TwinPod.
+ * Reads a note's current text from its TwinPod resource.
  *
- * Contract: `getSolidDataset` → `getThing` → `getStringNoLocaleAll(schema:text)`
- * → take the last value (TwinPod serialises historical values in temporal order;
- * the current value is the last one). Returns an empty string if the predicate
- * is absent (freshly-created notes have `schema:text " "` set by useTwinPodNoteCreate).
+ * Fetches the resource Turtle via window.solid.session.fetch (no hypergraph
+ * header — avoids TwinPod returning the full pod knowledge graph instead of
+ * the specific resource), parses it into a local temp graph, then queries for
+ * all statements with the text predicate. Returns the last value — TwinPod
+ * preserves state history; the current value is the last statement in
+ * serialisation order.
  *
- * @param {Function} solidFetch - Authenticated Solid-style fetch.
  * @param {object} [options]
- * @param {string} [options.predicateUri] - Predicate to read. Defaults to
- *   `http://schema.org/text`.
+ * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate to read.
  *
  * @returns {{
  *   text:    import('vue').Ref<string|null>,
@@ -19,18 +19,17 @@
  *   error:   import('vue').Ref<{type: string, message: string, status?: number}|null>,
  *   loadNote: (noteResourceUrl: string) => Promise<string|null>
  * }}
+ *
+ * Error types: 'invalid-input', 'not-found', 'http', 'network'.
  */
 
 import { ref } from 'vue'
-import {
-  getSolidDataset,
-  getThing,
-  getStringNoLocaleAll
-} from '@kaigilb/twinpod-client/write'
+import { ur } from '@kaigilb/twinpod-client'
 
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
+const GMX_TEXT_PREDICATE = 'http://graphmetrix.com/node#m_text'
 
-export function useTwinPodNoteRead(solidFetch, { predicateUri = DEFAULT_TEXT_PREDICATE } = {}) {
+export function useTwinPodNoteRead({ predicateUri = DEFAULT_TEXT_PREDICATE } = {}) {
   const text = ref(null)
   const loading = ref(false)
   const error = ref(null)
@@ -45,30 +44,42 @@ export function useTwinPodNoteRead(solidFetch, { predicateUri = DEFAULT_TEXT_PRE
     loading.value = true
     error.value = null
 
-    const thingUrl = `${noteResourceUrl}#note`
-    const fetchOpts = { fetch: solidFetch }
-
     try {
-      const dataset = await getSolidDataset(noteResourceUrl, fetchOpts)
-      const thing = getThing(dataset, thingUrl)
-      if (!thing) {
-        error.value = { type: 'not-found', message: `Note thing ${thingUrl} missing` }
+      // Use session.fetch directly — no hypergraph header, so TwinPod returns
+      // the actual resource Turtle instead of the full pod knowledge graph.
+      const response = await window.solid.session.fetch(noteResourceUrl, {
+        headers: {
+          Accept: 'text/turtle',
+          'Cache-Control': 'max-age=0'
+        }
+      })
+
+      if (response.status === 404) {
+        error.value = { type: 'not-found', message: `Note not found: ${noteResourceUrl}` }
         return null
       }
-      // TwinPod preserves state history by design — writes end the old state and
-      // begin a new one rather than overwriting. The Solid projection surfaces
-      // every historical value on the predicate, serialised in temporal order,
-      // so the current value is the last one.
-      const values = getStringNoLocaleAll(thing, predicateUri)
-      const value = values.length > 0 ? values[values.length - 1] : ''
+
+      if (!response.ok) {
+        error.value = { type: 'http', status: response.status, message: `HTTP ${response.status}` }
+        return null
+      }
+
+      const turtle = await response.text()
+      const tempGraph = ur.$rdf.graph()
+      ur.$rdf.parse(turtle, tempGraph, noteResourceUrl, 'text/turtle')
+      const pred = ur.$rdf.sym(predicateUri)
+      const gmxPred = ur.$rdf.sym(GMX_TEXT_PREDICATE)
+      const s1 = tempGraph.statementsMatching(null, pred, null, null)
+      const s2 = tempGraph.statementsMatching(null, gmxPred, null, null)
+      const all = [...s1, ...s2]
+      let value = all.length > 0 ? all[all.length - 1].object.value : ''
+      if (!value.trim()) {
+        try { value = localStorage.getItem('notetext:' + noteResourceUrl) || '' } catch { /* ignore */ }
+      }
       text.value = value
       return value
     } catch (e) {
-      if (e && typeof e.statusCode === 'number') {
-        error.value = { type: 'http', status: e.statusCode, message: e.message }
-      } else {
-        error.value = { type: 'network', message: e?.message || String(e) }
-      }
+      error.value = { type: 'network', message: e?.message || String(e) }
       return null
     } finally {
       loading.value = false

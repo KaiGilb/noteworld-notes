@@ -3,21 +3,17 @@
 /**
  * Creates a new note on TwinPod using the Stack B rdflib Turtle pipeline.
  *
- * Pipeline: build triples in a temp $rdf.graph() → storeToTurtle → modifyTurtle
- * → uploadTurtleToResource (PUT text/turtle to create the target resource).
+ * Pipeline: build triples in a temp ur.$rdf.graph() → ur.storeToTurtle → ur.modifyTurtle
+ * → ur.uploadTurtleToResource (PUT text/turtle to create the target resource).
  *
  * The resource URI is client-minted as `{podRoot}/t/t_note_{ts}_{rand4}`.
- * A blank node subject (`_:tN`) carries `rdf:type schema:Note` and
- * `schema:text " "` (single-space placeholder — empty literals cause Neo
- * shape-validation 422s; the body is replaced by the save composable).
+ * A blank node subject carries `rdf:type schema:Note` and `schema:text " "`.
  *
- * @param {Function} solidFetch - Authenticated Solid-style fetch (no Neo pagination).
- *   Built via `createSolidFetch({ fetch: session.fetch.bind(session) })` in the app.
  * @param {object} [options]
  * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
  *
  * @returns {{
- *   noteUri: import('vue').Ref<string|null>,  // the resource URL
+ *   noteUri: import('vue').Ref<string|null>,
  *   loading: import('vue').Ref<boolean>,
  *   error:   import('vue').Ref<{type: string, message: string, status?: number}|null>,
  *   createNote: (podBaseUrl: string) => Promise<string|null>
@@ -27,13 +23,7 @@
  */
 
 import { ref } from 'vue'
-import {
-  $rdf, NS,
-  getBlankNode,
-  storeToTurtle,
-  modifyTurtle,
-  uploadTurtleToResource
-} from '@kaigilb/twinpod-client'
+import { ur } from '@kaigilb/twinpod-client'
 
 const DEFAULT_TYPE_URI = 'http://schema.org/Note'
 const INITIAL_TEXT = ' '
@@ -43,7 +33,7 @@ function mintResourceId() {
   return `t_note_${Date.now()}_${rand}`
 }
 
-export function useTwinPodNoteCreate(solidFetch, { typeUri = DEFAULT_TYPE_URI } = {}) {
+export function useTwinPodNoteCreate({ typeUri = DEFAULT_TYPE_URI } = {}) {
   const noteUri = ref(null)
   const loading = ref(false)
   const error = ref(null)
@@ -63,22 +53,18 @@ export function useTwinPodNoteCreate(solidFetch, { typeUri = DEFAULT_TYPE_URI } 
     const resourceUrl = `${root}/t/${resourceId}`
 
     try {
-      // Step 1 — Blank node for the note subject
-      const { node: noteBlank } = getBlankNode($rdf, 'Note: ' + resourceId)
+      const { node: noteBlank } = ur.getBlankNode('Note: ' + resourceId)
 
-      // Step 2 — Build triples in a temp store
-      const tempStore = $rdf.graph()
-      const add = (s, p, o) => tempStore.add(s, p, o, $rdf.defaultGraph())
+      const tempStore = ur.$rdf.graph()
+      const add = (s, p, o) => tempStore.add(s, p, o, ur.$rdf.defaultGraph())
 
-      add(noteBlank, NS.RDF('type'), $rdf.sym(typeUri))
-      add(noteBlank, NS.SCHEMA('text'), $rdf.literal(INITIAL_TEXT))
+      add(noteBlank, ur.NS.RDF('type'), ur.$rdf.sym(typeUri))
+      add(noteBlank, ur.NS.SCHEMA('text'), ur.$rdf.literal(INITIAL_TEXT))
 
-      // Step 3 — Serialize and clean
-      let turtle = storeToTurtle($rdf, tempStore, '')
-      turtle = modifyTurtle(turtle)
+      let turtle = ur.storeToTurtle(tempStore, '')
+      turtle = ur.modifyTurtle(turtle)
 
-      // Step 4 — PUT to TwinPod (PUT creates new resources; PATCH modifies existing)
-      const result = await uploadTurtleToResource(solidFetch, resourceUrl, turtle, { method: 'PUT', returnResponse: true })
+      const result = await ur.uploadTurtleToResource(resourceUrl, turtle, { method: 'PUT', returnResponse: true })
 
       if (!result.ok) {
         error.value = { type: 'http', status: result.status, message: `Create failed with HTTP ${result.status}` }
