@@ -1,57 +1,74 @@
 // UNIT_TYPE=Hook
 
 /**
- * Lists notes in a TwinPod pod by RDF type, using pod-local concept search.
+ * Lists notes in a TwinPod pod by RDF type.
  *
- * Discovery is type-driven, not location-driven. We never list a container,
- * never filter by URI path, never assume notes live under `/t/` (or any
- * other path). A note is anything the pod's rdfStore types as either
- * `schema:Note` (what NoteWorld writes) or `neo:a_note` (Neo-shaped notes
- * from other tooling or TwinPod reifications).
+ * Two-phase, type-driven discovery:
  *
- * How notes get into the store:
- *   `ur.searchAndGetURIs(podRoot, concept, ...)` GETs
- *   `{podRoot}/search/{concept}?language=…&rows=…&start=…`, gets Turtle
- *   back, and parses it into the shared `ur.rdfStore`. We then run
- *   `rdfStore.match(null, rdf:type, <note-type>)` to pull the subjects we
- *   care about.
+ *   Phase 1 — enumerate candidate resources.
+ *     GET each container in `containerPaths` as Turtle, parse into a
+ *     TEMPORARY rdflib graph, and pull every `ldp:contains` object. The
+ *     parse is temporary so the container's own LDP metadata (ldp:contains,
+ *     uri4uri:path, sio:SIO_000148 reification types, etc.) does not
+ *     pollute the shared `ur.rdfStore` — that store is reserved for
+ *     type/attribute triples we actually want to filter on.
  *
- * Why multiple concept terms (5.1.3):
- *   TwinPod's search endpoint is a per-pod concept resolver backed by that
- *   pod's Neo ontology map. Concept names are not portable — the same
- *   logical "note" lands under different English labels on different pods.
- *   Observed 2026-04-18:
- *     - `tst-first.demo.systemtwin.com/search/note`  → 200, returns notes
- *     - `tst-ia2.demo.systemtwin.com/search/note`    → 200, empty body
- *     - `tst-ia2.demo.systemtwin.com/search/notes`   → 200, returns notes
- *   Rather than guess one, we query every term in `concepts` in parallel,
- *   let each result parse into the shared store, then run ONE type match
- *   across the union. Default `['note', 'notes']` covers the English
- *   singular/plural split. Callers that own their own ontology map can
- *   override via the `concepts` option.
+ *   Phase 2 — classify each candidate by RDF type.
+ *     Fire one `ur.fetchAndSaveTurtle` per candidate in parallel. Each
+ *     parses the resource's own Turtle (which includes `a schema:Note`
+ *     or `a neo:a_note` when NoteWorld or compatible tooling wrote it)
+ *     into the shared `ur.rdfStore`. After all settle, we run ONE type
+ *     match across the store and filter to the subjects in our candidate
+ *     set (so unrelated triples already in the store from other
+ *     composables don't leak into the result).
  *
- * Why no container listing:
- *   Earlier iterations (5.0.0, 5.1.3-draft) paired search with an LDP
- *   listing of `{pod}/t/`. That violated "discovery is about types and
- *   attributes, not container locations":
- *     - Baked the current interim `/t/` ACL workaround into the package.
- *     - Filtered by URI prefix (`/t/t_note_`), excluding notes written
- *       by any tool that mints under a different path.
- *     - Required a second HTTP round-trip on every search.
- *   If search fails to surface a note that exists in the pod, the fix is
- *   to add the missing concept name to `concepts`, not to crawl a path.
+ * Why this shape — and why NOT `/search/…`:
+ *   TwinPod's `/search/{concept}` endpoint is a per-pod keyword index,
+ *   not a type enumerator. Concept names are resolved against the pod's
+ *   Neo ontology map and are NOT portable — verified 2026-04-18: the
+ *   same 15 notes that `tst-first.demo.systemtwin.com/search/note`
+ *   returns are entirely absent from `tst-ia2.demo.systemtwin.com`'s
+ *   search index (returns 200 empty-body for both 'note' and effectively
+ *   empty for 'notes'). We cannot rely on search to enumerate notes.
+ *   The container listing is the only primitive that works on every pod.
+ *
+ * Why containerPaths is a parameter, not a constant:
+ *   Per `Rule_Code_twinpod-client-package.md`'s "no hardcoded ontology"
+ *   rule and the "interim `/t/` container as ACL workaround" framing in
+ *   `project_twinpod_data_driven_layout` memory, the container path is
+ *   a deployment detail, not a semantic criterion. The DEFAULT `['/t/']`
+ *   matches the current NoteWorld invariant; callers running against
+ *   pods with a different layout can override without forking.
+ *
+ *   CRITICAL: the container path is used ONLY to enumerate candidates.
+ *   The note-ness decision is still made by the `typeUris` filter after
+ *   Phase 2. If a resource's URI path happens to match a different
+ *   container but its type is schema:Note, it is still discovered as
+ *   long as that container is in `containerPaths`. URI-prefix filtering
+ *   (e.g. requiring `/t/t_note_` in the path) is explicitly NOT done —
+ *   discovery is about types, not about URI naming conventions.
+ *
+ * Why typeUris is a parameter:
+ *   Same rule — the note types could be `schema:Note`, `neo:a_note`,
+ *   or a future refinement. Defaults cover both today (NoteWorld writes
+ *   `schema:Note`; other tooling may reify as `neo:a_note`).
  *
  * Error model:
- *   Each concept query is attempted independently (`Promise.allSettled`).
- *   A failure in one does not poison the others. `error` is set only if
- *   EVERY query fails. An empty-body 200 is legitimate (the pod genuinely
- *   has no notes under that concept), not an error.
+ *   - Container listing: every path is attempted independently.
+ *     `discovery-error` is set only when EVERY container listing fails.
+ *     A single path failing is tolerated.
+ *   - Per-resource GET: every GET is attempted independently
+ *     (`Promise.allSettled`). A 404/500 on one note does not poison the
+ *     others; the type match simply won't see a triple for it.
  *
  * @param {object} [opts]
- * @param {string[]} [opts.concepts=['note','notes']]
- *   Concept names to query against `{podRoot}/search/{concept}`. Queried in
- *   parallel; results unioned by RDF type. Callers building other vocab
- *   (e.g. `['task','tasks']`, `['idea','ideas']`) can override.
+ * @param {string[]} [opts.containerPaths=['/t/']]
+ *   Container paths (relative to podRoot, with leading and trailing
+ *   slash) to enumerate. Listed in parallel; results unioned by URI.
+ * @param {string[]} [opts.typeUris]
+ *   Full URIs of RDF types that qualify a resource as a note. Defaults
+ *   to `['http://schema.org/Note', 'https://neo.graphmetrix.net/node/a_note']`.
+ *   A resource typed ANY of these is included.
  *
  * @returns {{
  *   notes:   import('vue').Ref<Array<{ uri: string }>>,
@@ -60,32 +77,54 @@
  *   searchNotes: (podRoot: string) => Promise<Array<{ uri: string }>>
  * }}
  *
- * Error types: 'invalid-input', 'search-error', 'network'.
+ * Error types: 'invalid-input', 'discovery-error', 'network'.
  */
 
 import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
-const DEFAULT_CONCEPTS = ['note', 'notes']
+const DEFAULT_CONTAINER_PATHS = ['/t/']
+const DEFAULT_TYPE_URIS = [
+  'http://schema.org/Note',
+  'https://neo.graphmetrix.net/node/a_note'
+]
 
 export function useTwinPodNoteSearch(opts = {}) {
-  const concepts = Array.isArray(opts.concepts) && opts.concepts.length > 0
-    ? opts.concepts
-    : DEFAULT_CONCEPTS
+  const containerPaths = Array.isArray(opts.containerPaths) && opts.containerPaths.length > 0
+    ? opts.containerPaths
+    : DEFAULT_CONTAINER_PATHS
+  const typeUris = Array.isArray(opts.typeUris) && opts.typeUris.length > 0
+    ? opts.typeUris
+    : DEFAULT_TYPE_URIS
 
   const notes = ref([])
   const loading = ref(false)
   const error = ref(null)
 
-  // Treats a settled Promise result as "failed" if it rejected, or the
-  // resolved value carries an error shape / HTTP >= 400. An empty 200
-  // (no hits under that concept) is NOT a failure — it's just nothing.
-  function isFailedResult(r) {
-    if (r.status === 'rejected') return true
-    const v = r.value
-    if (v?.error) return true
-    if (typeof v?.status === 'number' && v.status >= 400) return true
-    return false
+  // Enumerates ldp:contains subjects from a single container. Returns
+  // { uris: string[], failed: boolean }. An empty container is
+  // { uris: [], failed: false } — not a failure.
+  async function listContainer(containerUrl) {
+    try {
+      const res = await ur.hyperFetch(containerUrl, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'text/turtle' }
+      })
+      if (!res.ok) return { uris: [], failed: true }
+      const turtle = await res.text()
+
+      const tmp = ur.$rdf.graph()
+      ur.$rdf.parse(turtle, tmp, containerUrl, 'text/turtle')
+
+      const uris = tmp
+        .match(ur.$rdf.sym(containerUrl), ur.NS.LDP('contains'), null)
+        .map(st => st.object.value)
+
+      return { uris, failed: false }
+    } catch {
+      return { uris: [], failed: true }
+    }
   }
 
   async function searchNotes(podRoot) {
@@ -100,56 +139,74 @@ export function useTwinPodNoteSearch(opts = {}) {
     const root = podRoot.endsWith('/') ? podRoot.slice(0, -1) : podRoot
 
     try {
-      // Fire one request per concept in parallel. Each call parses its
-      // Turtle response into the shared `ur.rdfStore`; by the time all
-      // settle, the store contains every note the pod surfaced under any
-      // of our concept terms.
-      const results = await Promise.allSettled(
-        concepts.map(concept =>
-          ur.searchAndGetURIs(root, concept, {
-            force: true, lang: 'en', rows: 100, start: 0
-          })
-        )
+      // Phase 1 — enumerate.
+      const containerResults = await Promise.allSettled(
+        containerPaths.map(path => listContainer(`${root}${path}`))
       )
 
-      // Only error if EVERY concept query failed. A partial success
-      // (some concept returned notes, another 500'd) is still a success —
-      // we keep what we got.
-      if (results.every(isFailedResult)) {
+      const candidates = []
+      const seenCandidates = new Set()
+      let anyContainerOk = false
+      for (const r of containerResults) {
+        if (r.status === 'fulfilled' && !r.value.failed) {
+          anyContainerOk = true
+          for (const uri of r.value.uris) {
+            if (!seenCandidates.has(uri)) {
+              seenCandidates.add(uri)
+              candidates.push(uri)
+            }
+          }
+        }
+      }
+
+      if (!anyContainerOk) {
+        // Every container listing failed. We have no enumeration and
+        // cannot classify — this is a real failure, not empty state.
         error.value = {
-          type: 'search-error',
-          message: 'All concept searches failed'
+          type: 'discovery-error',
+          message: 'All container listings failed'
         }
         notes.value = []
         return []
       }
 
-      // ONE type match across the store after all queries have populated
-      // it. Matches EITHER `schema:Note` (what NoteWorld writes) OR
-      // `neo:a_note` (Neo-shaped notes from other tooling). Restricting
-      // to these two types keeps unrelated 'note'/'notes'-keyword hits
-      // (e.g. a Person whose description mentions "notes") from leaking in.
-      const schemaHits = ur.rdfStore
-        .match(null, ur.NS.RDF('type'), ur.NS.SCHEMA('Note'))
-        .map(st => st.subject.value)
-      const neoHits = ur.rdfStore
-        .match(null, ur.NS.RDF('type'), ur.NS.NEO('a_note'))
-        .map(st => st.subject.value)
-
-      // Union + dedup by URI. A note typed both ways (TwinPod reification
-      // alongside a schema:Note assertion) must appear exactly once.
-      const seen = new Set()
-      const deduped = []
-      for (const uri of [...schemaHits, ...neoHits]) {
-        if (!seen.has(uri)) { seen.add(uri); deduped.push({ uri }) }
+      // Fast path: zero candidates → zero notes, no GETs needed.
+      if (candidates.length === 0) {
+        notes.value = []
+        return []
       }
 
-      notes.value = deduped
-      return deduped
+      // Phase 2 — classify. One parallel GET per candidate; each parses
+      // its own rdf:type triples into the shared ur.rdfStore. Failures
+      // are swallowed (the store simply won't get triples for that URI,
+      // so it drops out of the filter below).
+      await Promise.allSettled(
+        candidates.map(uri => ur.fetchAndSaveTurtle(uri, true))
+      )
+
+      // ONE type match across the store, restricted to our candidate set.
+      // The candidate set filter prevents the store's existing triples
+      // (from other composables on the same page) from leaking in.
+      const hits = []
+      const seenHits = new Set()
+      for (const typeUri of typeUris) {
+        const typeNode = ur.$rdf.sym(typeUri)
+        const stmts = ur.rdfStore.match(null, ur.NS.RDF('type'), typeNode)
+        for (const st of stmts) {
+          const uri = st.subject.value
+          if (seenCandidates.has(uri) && !seenHits.has(uri)) {
+            seenHits.add(uri)
+            hits.push({ uri })
+          }
+        }
+      }
+
+      notes.value = hits
+      return hits
     } catch (e) {
-      // This catches anything thrown by `Promise.allSettled` or the type
-      // match itself; per-query rejections are already absorbed as
-      // 'rejected' settlements above.
+      // Per-step failures are already absorbed inside listContainer and
+      // Promise.allSettled; this catches anything thrown by the type
+      // match itself or by unexpected bugs.
       error.value = { type: 'network', message: e?.message || String(e) }
       notes.value = []
       return []

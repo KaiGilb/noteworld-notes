@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.1.4] - 2026-04-18
+### Fixed — F.Find_Note still empty on pods whose search index doesn't cover the notes
+- `useTwinPodNoteSearch` switches to **two-phase type-driven discovery**: (1) enumerate candidate URIs from every container in `containerPaths` via `ur.hyperFetch` (Turtle parsed into a temporary rdflib graph so LDP metadata doesn't leak into the shared store); (2) classify each candidate via `ur.fetchAndSaveTurtle` in parallel (populates `ur.rdfStore` with the resource's real `rdf:type`); then one match on `rdf:type ∈ typeUris` (default `schema:Note ∪ neo:a_note`) filtered to the candidate set.
+- Why this replaces v5.1.3's `/search/{concept}` approach: verified 2026-04-18 against `tst-ia2.demo.systemtwin.com`, the pod's search index does not cover the notes at all — `/search/note` returns 200 empty-body, `/search/notes` returns one unrelated resource whose text happens to contain the word "notes". No combination of concept terms can enumerate the actual 15 notes via search on that pod. `/t/` container listing returns all 15 as `ldp:contains` relations, making it the only primitive that works across every pod we've tested.
+- Container paths are a parameter, not a constant, so callers running against pods with a different layout can override without forking (same `no-hardcoded-ontology` principle as `typeUris`). The container path is used ONLY to enumerate candidates; the note-ness decision is the type match, not the path.
+- URI prefix / naming filtering (`/t/t_note_`) is NEVER applied — a resource is a note iff its `rdf:type` matches. Regression guard: test "returns notes regardless of URI path / naming".
+- Error model: `discovery-error` is set only when EVERY container listing fails; a partial failure in a multi-container config is tolerated. Per-candidate GET failures are swallowed (the resource simply won't appear in the type match).
+- 36 unit tests (up from 34 in 5.1.3 — tests fully rewritten to cover Phase 1, Phase 2, type filter, union, partial-failure tolerance, and regression guards).
+
 ## [5.1.3] - 2026-04-18
 ### Fixed — F.Find_Note still empty on pods whose search indexer doesn't map `note`
 - `useTwinPodNoteSearch` now issues a parallel pod-local search for every term in `concepts` (default `['note', 'notes']`) via `ur.searchAndGetURIs`, and unions the subjects across the shared `ur.rdfStore` with a single type match on `schema:Note ∪ neo:a_note`. TwinPod's search endpoint is a per-pod concept resolver backed by that pod's Neo ontology map; concept labels are NOT portable. Observed 2026-04-18: `tst-first/search/note` returns notes, `tst-ia2/search/note` returns 200 empty-body, `tst-ia2/search/notes` returns the 15 notes that 5.1.2 was missing.
