@@ -1,5 +1,11 @@
 # Changelog
 
+## [5.1.2] - 2026-04-18
+### Fixed — F.Find_Note returned zero NoteWorld-authored notes (dual-type filter)
+- `useTwinPodNoteSearch` now filters the rdfStore on EITHER `schema:Note` (http://schema.org/Note) OR `neo:a_note` (https://neo.graphmetrix.net/node/a_note) and unions the subjects. Both `useTwinPodNoteCreate` and `useTwinPodNoteSave` write notes typed `schema:Note`, so the v5.1.1 single-type filter (neo:a_note only) matched zero subjects and F.Find_Note silently returned an empty list on every pod. The `neo:a_note` branch is retained so pods containing Neo-shaped notes from other tooling are still listed alongside NoteWorld notes.
+- Dedup behaviour unchanged: a subject typed both ways appears exactly once.
+- Regression guard added — test fails if the filter drops `schema:Note`.
+
 ## [5.1.1] - 2026-04-18
 ### Fixed — real-pod save + find (post-Inc-2 defect pass)
 - `useTwinPodNoteSave` now calls `ur.uploadTurtleToResource` with `method: 'PUT'` (full-replace). The previous default (PATCH with `Content-Type: text/turtle`) is not a valid Solid operation — Solid PATCH requires `application/sparql-update` or `application/n3`. The real pod at `tst-first.demo.systemtwin.com` misreports the PATCH + text/turtle combo as `401 "session expired"`, silently breaking every optimistic save since v4.0.0. PUT matches `useTwinPodNoteCreate` and the "build whole Turtle document on every save" model this composable already uses.

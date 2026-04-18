@@ -5,7 +5,7 @@
  *
  * Notes are discovered via the TwinPod search endpoint — a pod-local concept
  * lookup that returns Turtle into `ur.rdfStore`. The returned store is then
- * filtered for subjects typed `neo:a_note`.
+ * filtered for subjects typed either `schema:Note` OR `neo:a_note`.
  *
  * Design note — type-driven discovery (5.1.1):
  *   Resources are identified by RDF type plus the `t_type_` URI prefix, NOT
@@ -15,6 +15,16 @@
  *   pods whose ACL forbids container listing (e.g. `/t/` → 403 on this pod).
  *   v5.0.0 added an LDP listing path alongside the search; it was the wrong
  *   abstraction and has been removed here.
+ *
+ * Design note — dual-type filter (5.1.2):
+ *   `useTwinPodNoteCreate` and `useTwinPodNoteSave` both write notes typed
+ *   `schema:Note` (http://schema.org/Note). The v5.1.1 filter matched only
+ *   `neo:a_note`, so NoteWorld-authored notes never appeared in F.Find_Note.
+ *   We now match on both predicates and union the results:
+ *     - `schema:Note`  — what NoteWorld writes (the canonical case).
+ *     - `neo:a_note`   — Neo-shaped notes from other tooling or TwinPod
+ *                         reifications; kept so a pod that mixes sources
+ *                         lists everything rather than hiding half.
  *
  * @returns {{
  *   notes:   import('vue').Ref<Array<{ uri: string }>>,
@@ -61,19 +71,24 @@ export function useTwinPodNoteSearch() {
         return []
       }
 
-      // Extract subjects typed `neo:a_note` from the store `searchAndGetURIs`
-      // auto-parsed into. Restricts the match to Neo-typed notes so unrelated
-      // 'note'-keyword hits don't leak in.
-      const results = ur.rdfStore
+      // Extract subjects typed as notes from the store `searchAndGetURIs`
+      // auto-parsed into. Matches EITHER `schema:Note` (what NoteWorld writes)
+      // OR `neo:a_note` (Neo-shaped notes from other tooling). Restricting to
+      // these two types keeps unrelated 'note'-keyword hits from leaking in.
+      const schemaHits = ur.rdfStore
+        .match(null, ur.NS.RDF('type'), ur.NS.SCHEMA('Note'))
+        .map(st => st.subject.value)
+      const neoHits = ur.rdfStore
         .match(null, ur.NS.RDF('type'), ur.NS.NEO('a_note'))
-        .map(st => ({ uri: st.subject.value }))
+        .map(st => st.subject.value)
 
-      // Dedup by URI in case the store carries the same type assertion twice
-      // (TwinPod state history or prior session re-parses).
+      // Union + dedup by URI. A note that is typed both ways (TwinPod
+      // reification, or a resource re-saved after an older format) must
+      // still appear exactly once.
       const seen = new Set()
       const deduped = []
-      for (const n of results) {
-        if (!seen.has(n.uri)) { seen.add(n.uri); deduped.push(n) }
+      for (const uri of [...schemaHits, ...neoHits]) {
+        if (!seen.has(uri)) { seen.add(uri); deduped.push({ uri }) }
       }
 
       notes.value = deduped
