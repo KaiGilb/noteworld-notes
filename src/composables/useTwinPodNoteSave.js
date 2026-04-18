@@ -14,6 +14,13 @@
  * The returned Promise still resolves to the eventual PUT outcome so existing
  * await-style callers keep working.
  *
+ * HTTP method — 5.1.1 fix:
+ * Uses `method: 'PUT'` (full-replace). PATCH text/turtle is not a valid Solid
+ * operation — the real pod responds 401 "session expired" when PATCH is used
+ * with Content-Type: text/turtle. PUT matches Create's behaviour and the
+ * "build whole Turtle document on every save" model this composable already
+ * follows.
+ *
  * Coalescing — last-write-wins: at most one PUT is in flight per composable
  * instance plus at most one queued. Rapid saves drop their text into the
  * queued slot, replacing whatever was waiting; only the most recent text is
@@ -73,7 +80,11 @@ export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, type
       const safeText = text.trim() !== '' ? text : ' '
       const turtle = `@prefix schema: <http://schema.org/> .\n_:t1 a schema:Note ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
 
-      const result = await ur.uploadTurtleToResource(noteResourceUrl, turtle, { returnResponse: true })
+      // method: 'PUT' — full-replace semantics match our "build complete Turtle
+      // document" pattern. Default PATCH with Content-Type: text/turtle is not
+      // a valid Solid operation (PATCH needs application/sparql-update or n3),
+      // and this pod misreports that as 401 "session expired". See Create.
+      const result = await ur.uploadTurtleToResource(noteResourceUrl, turtle, { method: 'PUT', returnResponse: true })
 
       if (!result.ok) {
         error.value = { type: 'http', status: result.status, message: `Save failed with HTTP ${result.status}` }

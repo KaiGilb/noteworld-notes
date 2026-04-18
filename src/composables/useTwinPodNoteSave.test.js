@@ -114,10 +114,26 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(turtle).toContain('<https://example.com/body>')
   })
 
-  test('passes returnResponse: true to uploadTurtleToResource', async () => {
+  // 5.1.1 — PUT (full-replace) instead of the library default PATCH.
+  // PATCH + Content-Type: text/turtle is not a valid Solid operation; the
+  // real pod responds 401 on that combo. PUT matches Create.
+  test('passes method: PUT and returnResponse: true to uploadTurtleToResource', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'hello')
-    expect(mockUploadTurtleToResource.mock.calls[0][2]).toEqual({ returnResponse: true })
+    expect(mockUploadTurtleToResource.mock.calls[0][2]).toEqual({ method: 'PUT', returnResponse: true })
+  })
+
+  // 5.1.1 regression guard — the real pod treats PATCH text/turtle as a
+  // malformed Solid operation and returns 401 "session expired", silently
+  // breaking every save. If someone ever drops or rewrites the method option
+  // and accidentally reverts to the library default (PATCH), this test fails.
+  // Spec: V.Speed_Save_Note — a save must actually persist; a 401 defeats that.
+  test('never passes method: PATCH (regression guard for the 5.1.0 defect)', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'hi')
+    const opts = mockUploadTurtleToResource.mock.calls[0][2]
+    expect(opts?.method).not.toBe('PATCH')
+    expect(opts?.method).toBe('PUT')
   })
 })
 

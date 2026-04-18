@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.1.1] - 2026-04-18
+### Fixed — real-pod save + find (post-Inc-2 defect pass)
+- `useTwinPodNoteSave` now calls `ur.uploadTurtleToResource` with `method: 'PUT'` (full-replace). The previous default (PATCH with `Content-Type: text/turtle`) is not a valid Solid operation — Solid PATCH requires `application/sparql-update` or `application/n3`. The real pod at `tst-first.demo.systemtwin.com` misreports the PATCH + text/turtle combo as `401 "session expired"`, silently breaking every optimistic save since v4.0.0. PUT matches `useTwinPodNoteCreate` and the "build whole Turtle document on every save" model this composable already uses.
+- `useTwinPodNoteSearch` is now type-driven single-source: drops the LDP container listing of `{pod}/t/` (returned 403 against this pod and was the wrong abstraction — notes are discovered by RDF type, not by which container they currently live in), and corrects the type filter from `neo:a_fragmented-document` (v5.0.0 regression) back to `neo:a_note` — the type TwinPod assigns to note-shaped resources.
+
+## [5.1.0] - 2026-04-18
+### Added — optimistic create (S.OptimisticCreate / Increment 2)
+- `useTwinPodNoteCreate` now mints the resource URI and flips `pendingUri` + `creating` synchronously BEFORE the first `await`, enabling fire-and-forget create. Callers that do not await can read `pendingUri.value` immediately and navigate while the PUT runs in the background. The returned Promise still resolves to the eventual PUT outcome so existing await-style callers keep working.
+
 ## [5.0.1] - 2026-04-18
 ### Changed — non-blocking save (S.OptimisticSave / Increment 1)
 - `useTwinPodNoteSave.saveNote` now returns to its caller without awaiting the PUT. The PUT runs in the background; UI state is exposed via `saving` / `saved` / `error` refs. The returned Promise still resolves to the eventual PUT outcome so existing await-style callers keep working.
