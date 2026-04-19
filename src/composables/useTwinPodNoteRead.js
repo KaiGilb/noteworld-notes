@@ -29,6 +29,17 @@ import { ur } from '@kaigilb/twinpod-client'
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
 const GMX_TEXT_PREDICATE = 'http://graphmetrix.com/node#m_text'
 
+// TwinPod stores \uXXXX escape sequences verbatim and does not unescape them
+// on serialisation. rdflib returns them as literal backslash-u sequences.
+// This function converts them back to the original Unicode characters so that
+// characters like æ, ø, å display correctly in the editor.
+function unescapeTurtleString(str) {
+  if (!str) return str
+  return str
+    .replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/\\U([0-9A-Fa-f]{8})/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+}
+
 export function useTwinPodNoteRead({ predicateUri = DEFAULT_TEXT_PREDICATE } = {}) {
   const text = ref(null)
   const loading = ref(false)
@@ -65,7 +76,7 @@ export function useTwinPodNoteRead({ predicateUri = DEFAULT_TEXT_PREDICATE } = {
       const s1 = tempGraph.statementsMatching(null, pred, null, null)
       const s2 = tempGraph.statementsMatching(null, gmxPred, null, null)
       const all = [...s1, ...s2]
-      let value = all.length > 0 ? all[all.length - 1].object.value : ''
+      let value = all.length > 0 ? unescapeTurtleString(all[all.length - 1].object.value) : ''
       if (!value.trim()) {
         try { value = localStorage.getItem('notetext:' + noteResourceUrl) || '' } catch { /* ignore */ }
       }

@@ -1,5 +1,30 @@
 # Changelog
 
+## [5.2.5] - 2026-04-19
+### Fixed — notes with æøå lose all text from the first non-ASCII character
+- **Root cause:** `escapeTurtleString` in `useTwinPodNoteSave` encoded non-ASCII characters as Turtle `\uXXXX` escape sequences. TwinPod's server-side Turtle parser truncates the stored string value at the first `\u` sequence, silently discarding all text from that position onwards. On next read the note returned "hei " instead of "hei æøå".
+- **Fix:** Non-ASCII characters are now sent as raw UTF-8 bytes — they are valid in Turtle 1.1 string literals (§3.3) and the current demo server accepts them without 422. Only the five characters that Turtle string syntax actually requires escaping (`\\`, `"`, `\n`, `\r`, `\t`) are still escaped.
+- `unescapeTurtleString` is retained in `useTwinPodNoteRead` and `useTwinPodNotePreviews` for backward compatibility: any note previously saved with `\uXXXX` sequences will still decode correctly on read.
+- The 5.2.3 CHANGELOG entry's claim that "TwinPod requires `\uXXXX` escaping on write (raw UTF-8 returns 422)" is superseded by this fix. That conclusion was drawn from an earlier server context; the current demo pod accepts raw UTF-8.
+
+## [5.2.4] - 2026-04-19
+### Fixed — clean up remaining `schema.org/Note` Turtle fixture strings in test files
+- `useTwinPodNoteRead.test.js` and `useTwinPodNotePreviews.test.js` both used `https://schema.org/Note` as a throwaway type URI in Turtle-parsing assertion fixtures. The tests are about `ur.$rdf.parse` call shape — the RDF type value is irrelevant to what is being asserted — but keeping a non-existent URI in any fixture perpetuates confusion. Both fixtures updated to `https://neo.graphmetrix.net/node/a_paragraph` (the canonical Neo type per the 2026-04-18 ontology map).
+- Historical CHANGELOG entries describing what previous versions actually wrote are not rewritten; they remain accurate documentation of behaviour at that time.
+- No runtime code changed. No version bump needed for consumers (test-only change). Bumped to 5.2.4 to keep the CHANGELOG and package version aligned.
+
+## [5.2.3] - 2026-04-19
+### Fixed — non-ASCII characters (æ, ø, å) display as `\uXXXX` escape sequences on read
+- **Root cause:** TwinPod stores `\uXXXX` Turtle escape sequences verbatim and does not unescape them on serialisation. rdflib returns these sequences as literal backslash-u character strings rather than the original Unicode characters. `useTwinPodNoteRead` and `useTwinPodNotePreviews` were returning the raw escape sequences to the UI, so any note saved with non-ASCII characters displayed as `\u00E6` etc. instead of `æ`.
+- **Fix:** Added `unescapeTurtleString` helper to both `useTwinPodNoteRead` and `useTwinPodNotePreviews`. Applied to the `object.value` string returned from rdflib before storing in the reactive ref / previews cache. Handles both `\uXXXX` (BMP) and `\UXXXXXXXX` (non-BMP) forms.
+- `escapeTurtleString` in `useTwinPodNoteSave` is unchanged — TwinPod requires `\uXXXX` escaping on write (raw UTF-8 returns 422) so the save pipeline must continue to escape. The round-trip is: escape on save → TwinPod stores escapes → unescape on read → correct characters in UI.
+
+## [5.2.2] - 2026-04-19
+### Changed — externalize `@kaigilb/twinpod-client` as a peer dependency
+- `@kaigilb/twinpod-client` moved from `devDependencies` (bundled) to `peerDependencies` in `noteworld-notes/package.json`. Vite build config updated: `external: ['vue', '@kaigilb/twinpod-client']`.
+- **Why:** When apps bundled both `noteworld-notes` (which had twinpod-client inlined) and `@kaigilb/twinpod-client` directly, two separate `ur` singleton instances existed at runtime. The app's `ur.hyperFetch` and the package's `ur.uploadTurtleToResource` operated on different objects — the auth session established by one was invisible to the other. Externalising forces both to resolve to the same `ur` instance at the app's module scope.
+- Consumers must now list `@kaigilb/twinpod-client` as a direct dependency alongside `@kaigilb/noteworld-notes`. The `apps/noteworld` package.json already satisfies this requirement.
+
 ## [5.2.1] - 2026-04-19
 ### Fixed — new notes not appearing in home list after creation (blank node subject)
 - **Root cause:** `useTwinPodNoteCreate` (since 5.1.0) and `useTwinPodNoteSave` (since 5.1.1) both wrote Turtle with a blank node (`_:t1` / `noteBlank`) as the RDF subject of the `rdf:type` and `schema:text` triples. TwinPod's search index associates `rdf:type` with the **resource URI**, not with blank nodes inside the document. A new note written with a blank node subject had no typed resource URI → TwinPod did not index it → it never appeared in `ur.searchAndGetURIs` results → `loadPreviews` was never called for it → the note created by the user showed no text on the home screen.

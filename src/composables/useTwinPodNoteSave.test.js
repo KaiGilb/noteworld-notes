@@ -89,22 +89,48 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(turtle).toContain('\\\\')
   })
 
-  test('escapes non-ASCII characters as \\uXXXX', async () => {
+  test('escapes carriage returns (\\r) in text', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'a\rb')
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain('\\r')
+    expect(turtle).not.toMatch(/a\rb/)
+  })
+
+  test('escapes tab characters (\\t) in text', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'col1\tcol2')
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain('\\t')
+    expect(turtle).not.toMatch(/col1\tcol2/)
+  })
+
+  // 5.2.5 fix — TwinPod's server-side Turtle parser truncated stored strings at
+  // the first \uXXXX escape sequence, silently losing all text from that character
+  // onwards. Non-ASCII characters are now passed through as raw UTF-8 bytes, which
+  // is valid per Turtle 1.1 §3.3 and accepted by the current demo pod without 422.
+  test('passes non-ASCII characters (æøå) as raw UTF-8, not \\uXXXX escapes', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'æøå')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('\\u00E6')
-    expect(turtle).toContain('\\u00F8')
-    expect(turtle).toContain('\\u00E5')
-    expect(turtle).not.toContain('æ')
+    // Raw characters must appear in the Turtle body.
+    expect(turtle).toContain('æ')
+    expect(turtle).toContain('ø')
+    expect(turtle).toContain('å')
+    // \uXXXX escapes must NOT be present — they trigger the TwinPod truncation bug.
+    expect(turtle).not.toContain('\\u00E6')
+    expect(turtle).not.toContain('\\u00F8')
+    expect(turtle).not.toContain('\\u00E5')
   })
 
-  test('escapes em dash and other BMP Unicode as \\uXXXX', async () => {
+  // 5.2.5 fix — same raw UTF-8 rule applies to all non-ASCII BMP characters.
+  test('passes em dash and other BMP Unicode as raw UTF-8, not \\uXXXX escapes', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'a — b')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('\\u2014')
-    expect(turtle).not.toContain('—')
+    // Raw em dash must appear; \u2014 must NOT appear.
+    expect(turtle).toContain('—')
+    expect(turtle).not.toContain('\\u2014')
   })
 
   test('uses custom predicateUri when provided', async () => {

@@ -318,7 +318,7 @@ describe('useTwinPodNoteRead — Turtle parsing', () => {
   // with per-note Turtle. ur.$rdf.parse must be called with:
   //   (turtleString, tempGraph, baseUri, 'text/turtle')
   test('parses the fetched Turtle into a temp graph with the note URL as base', async () => {
-    const TURTLE_BODY = '<> a <https://schema.org/Note> .'
+    const TURTLE_BODY = '<> a <https://neo.graphmetrix.net/node/a_paragraph> .'
     mockFetchResourceTurtle.mockResolvedValueOnce(makeResponse({ turtle: TURTLE_BODY }))
     const { loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)

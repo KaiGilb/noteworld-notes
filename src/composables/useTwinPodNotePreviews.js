@@ -23,6 +23,14 @@ import { ur } from '@kaigilb/twinpod-client'
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
 const GMX_TEXT_PREDICATE = 'http://graphmetrix.com/node#m_text'
 
+// TwinPod stores \uXXXX escape sequences verbatim — unescape on read.
+function unescapeTurtleString(str) {
+  if (!str) return str
+  return str
+    .replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/\\U([0-9A-Fa-f]{8})/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+}
+
 export function useTwinPodNotePreviews({ predicateUri = DEFAULT_TEXT_PREDICATE, maxLength = 60 } = {}) {
   const previews = ref({})
 
@@ -43,7 +51,7 @@ export function useTwinPodNotePreviews({ predicateUri = DEFAULT_TEXT_PREDICATE, 
       const statements = tempGraph.statementsMatching(null, pred, null, null)
       const fallback = tempGraph.statementsMatching(null, gmxPred, null, null)
       const all = [...statements, ...fallback]
-      const text = all.length > 0 ? all[all.length - 1].object.value.trim() : ''
+      const text = all.length > 0 ? unescapeTurtleString(all[all.length - 1].object.value).trim() : ''
       if (text) {
         previews.value[uri] = text.length > maxLength ? text.slice(0, maxLength) + '…' : text
         try { localStorage.setItem('notetext:' + uri, text) } catch { /* ignore */ }

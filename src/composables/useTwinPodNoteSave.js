@@ -50,16 +50,25 @@ const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
 const DEFAULT_TYPE_URI = 'https://neo.graphmetrix.net/node/a_paragraph'
 
 function escapeTurtleString(str) {
+  // Escape only the characters that Turtle string syntax requires: backslash,
+  // double-quote, and the three ASCII control characters that would break the
+  // single-line string literal.
+  //
+  // Non-ASCII characters (æøå, emoji, …) are passed through as raw UTF-8 bytes.
+  // Earlier versions escaped these as \uXXXX; that caused TwinPod's server-side
+  // Turtle parser to truncate the stored string at the first escape sequence,
+  // silently losing all text from that character onwards. Raw UTF-8 does not
+  // trigger that bug and is valid per Turtle 1.1 §3.3.
+  //
+  // unescapeTurtleString in the read composables is retained so any notes saved
+  // with the old \uXXXX encoding are still decoded correctly.
   let result = ''
   for (const char of str) {
-    const code = char.codePointAt(0)
     if (char === '\\') { result += '\\\\'; continue }
-    if (char === '"') { result += '\\"'; continue }
-    if (char === '\n') { result += '\\n'; continue }
-    if (char === '\r') { result += '\\r'; continue }
-    if (char === '\t') { result += '\\t'; continue }
-    if (code > 0xFFFF) { result += `\\U${code.toString(16).padStart(8, '0').toUpperCase()}`; continue }
-    if (code > 0x7E) { result += `\\u${code.toString(16).padStart(4, '0').toUpperCase()}`; continue }
+    if (char === '"')  { result += '\\"';  continue }
+    if (char === '\n') { result += '\\n';  continue }
+    if (char === '\r') { result += '\\r';  continue }
+    if (char === '\t') { result += '\\t';  continue }
     result += char
   }
   return result

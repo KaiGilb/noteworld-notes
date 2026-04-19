@@ -1,6 +1,6 @@
 {
   "name": "@kaigilb/noteworld-notes",
-  "version": "5.2.1",
+  "version": "5.2.5",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -16,10 +16,8 @@
     "lint": "eslint src"
   },
   "peerDependencies": {
-    "vue": "^3.0.0"
-  },
-  "dependencies": {
-    "@kaigilb/twinpod-client": "file:../../../twinpod-client"
+    "vue": "^3.0.0",
+    "@kaigilb/twinpod-client": "^1.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
@@ -34,6 +32,6 @@
     "url": "https://github.com/KaiGilb/noteworld-notes"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   }
 }
