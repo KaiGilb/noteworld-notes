@@ -7,7 +7,9 @@
  * → ur.uploadTurtleToResource (PUT text/turtle to create the target resource).
  *
  * The resource URI is client-minted as `{podRoot}/t/t_note_{ts}_{rand4}`.
- * A blank node subject carries `rdf:type schema:Note` and `schema:text " "`.
+ * The resource URI is the RDF subject carrying `rdf:type neo:a_paragraph` and `schema:text " "`.
+ * Using the resource URI (not a blank node) ensures TwinPod's search index can associate
+ * the type with the resource URI and include the note in search results.
  *
  * Optimistic create (S.OptimisticCreate / Increment 2):
  * `createNote` mints the URI and flips `creating=true` / `pendingUri` synchronously,
@@ -23,7 +25,7 @@
  * coordination is via the URL only.
  *
  * @param {object} [options]
- * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
+ * @param {string} [options.typeUri='https://neo.graphmetrix.net/node/a_paragraph'] - RDF type for the Note.
  *
  * @returns {{
  *   pendingUri: import('vue').Ref<string|null>,
@@ -47,7 +49,7 @@
 import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
-const DEFAULT_TYPE_URI = 'http://schema.org/Note'
+const DEFAULT_TYPE_URI = 'https://neo.graphmetrix.net/node/a_paragraph'
 const INITIAL_TEXT = ' '
 
 function mintResourceId() {
@@ -66,13 +68,16 @@ export function useTwinPodNoteCreate({ typeUri = DEFAULT_TYPE_URI } = {}) {
 
   async function runCreatePut(resourceUrl) {
     try {
-      const { node: noteBlank } = ur.getBlankNode('Note: ' + resourceUrl.split('/').pop())
+      // Use the resource URI as the RDF subject — not a blank node. TwinPod's
+      // search index associates rdf:type with the resource URI; a blank node
+      // subject leaves the resource URI untyped and the note absent from search.
+      const noteNode = ur.$rdf.sym(resourceUrl)
 
       const tempStore = ur.$rdf.graph()
       const add = (s, p, o) => tempStore.add(s, p, o, ur.$rdf.defaultGraph())
 
-      add(noteBlank, ur.NS.RDF('type'), ur.$rdf.sym(typeUri))
-      add(noteBlank, ur.NS.SCHEMA('text'), ur.$rdf.literal(INITIAL_TEXT))
+      add(noteNode, ur.NS.RDF('type'), ur.$rdf.sym(typeUri))
+      add(noteNode, ur.NS.SCHEMA('text'), ur.$rdf.literal(INITIAL_TEXT))
 
       let turtle = ur.storeToTurtle(tempStore, '')
       turtle = ur.modifyTurtle(turtle)

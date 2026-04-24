@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
-const { mockGraph, mock$rdf, mockNS, mockGetBlankNode, mockStoreToTurtle, mockModifyTurtle, mockUploadTurtleToResource } = vi.hoisted(() => {
+const { mockGraph, mock$rdf, mockNS, mockStoreToTurtle, mockModifyTurtle, mockUploadTurtleToResource } = vi.hoisted(() => {
   const mockGraph = { add: vi.fn() }
   return {
     mockGraph,
@@ -14,8 +14,10 @@ const { mockGraph, mock$rdf, mockNS, mockGetBlankNode, mockStoreToTurtle, mockMo
       RDF: vi.fn((name) => `http://www.w3.org/1999/02/22-rdf-syntax-ns#${name}`),
       SCHEMA: vi.fn((name) => `http://schema.org/${name}`),
     },
-    mockGetBlankNode: vi.fn(() => ({ node: { value: '_:t1' }, existed: false })),
-    mockStoreToTurtle: vi.fn(() => '_:t1 a <http://schema.org/Note> .\n'),
+    // mockGetBlankNode intentionally absent — 5.2.1 fix replaced blank-node
+    // subject with the resource URI. If the source ever reverts to getBlankNode,
+    // the call will throw "ur.getBlankNode is not a function" and fail every test.
+    mockStoreToTurtle: vi.fn(() => '<https://example.com/t/t_note_1_abcd> a <https://neo.graphmetrix.net/node/a_paragraph> .\n'),
     mockModifyTurtle: vi.fn((t) => t),
     mockUploadTurtleToResource: vi.fn(),
   }
@@ -25,7 +27,7 @@ vi.mock('@kaigilb/twinpod-client', () => ({
   ur: {
     $rdf: mock$rdf,
     NS: mockNS,
-    getBlankNode: (...args) => mockGetBlankNode(...args),
+    // getBlankNode intentionally NOT mocked — resource URI is now the subject (5.2.1)
     storeToTurtle: (...args) => mockStoreToTurtle(...args),
     modifyTurtle: (...args) => mockModifyTurtle(...args),
     uploadTurtleToResource: (...args) => mockUploadTurtleToResource(...args),
@@ -37,10 +39,8 @@ import { useTwinPodNoteCreate } from './useTwinPodNoteCreate.js'
 const POD = 'https://tst-first.demo.systemtwin.com'
 
 beforeEach(() => {
-  mockGetBlankNode.mockReset()
-  mockGetBlankNode.mockReturnValue({ node: { value: '_:t1' }, existed: false })
   mockStoreToTurtle.mockReset()
-  mockStoreToTurtle.mockReturnValue('_:t1 a <http://schema.org/Note> .\n')
+  mockStoreToTurtle.mockReturnValue('<https://example.com/t/t_note_1_abcd> a <https://neo.graphmetrix.net/node/a_paragraph> .\n')
   mockModifyTurtle.mockReset()
   mockModifyTurtle.mockImplementation((t) => t)
   mockUploadTurtleToResource.mockReset()
@@ -174,11 +174,15 @@ describe('useTwinPodNoteCreate — success', () => {
 })
 
 describe('useTwinPodNoteCreate — Stack B pipeline contract', () => {
-  test('calls ur.getBlankNode with a label containing the resource ID', async () => {
+  // 5.2.1 regression guard — blank-node subject prevented TwinPod from indexing
+  // new notes in search results. The resource URI must be the RDF subject.
+  test('uses the resource URI as the RDF subject, not a blank node (5.2.1 regression guard)', async () => {
     const { createNote } = useTwinPodNoteCreate()
     await createNote(POD)
-    expect(mockGetBlankNode).toHaveBeenCalledTimes(1)
-    expect(mockGetBlankNode.mock.calls[0][0]).toMatch(/^Note: t_note_\d+_[a-z0-9]{4}$/)
+    // ur.$rdf.sym is called once for the subject (resourceUrl) and once for typeUri.
+    // Verify the resource URL pattern appears among the sym calls.
+    const symCalls = mock$rdf.sym.mock.calls.map(c => c[0])
+    expect(symCalls.some(uri => /^https:\/\/tst-first\.demo\.systemtwin\.com\/t\/t_note_\d+_[a-z0-9]{4}$/.test(uri))).toBe(true)
   })
 
   test('builds two triples in a temp store (rdf:type + schema:text)', async () => {
@@ -227,11 +231,11 @@ describe('useTwinPodNoteCreate — custom typeUri', () => {
     expect(mock$rdf.sym).toHaveBeenCalledWith('https://example.com/my/Note')
   })
 
-  // Spec: F.Create_Note — default RDF type is http://schema.org/Note
-  test('defaults typeUri to schema:Note when options are omitted', async () => {
+  // Spec: F.Create_Note — default RDF type is neo:a_paragraph (5.1.5 correction — schema:Note was never a valid URI)
+  test('defaults typeUri to neo:a_paragraph when options are omitted', async () => {
     const { createNote } = useTwinPodNoteCreate()
     await createNote(POD)
-    expect(mock$rdf.sym).toHaveBeenCalledWith('http://schema.org/Note')
+    expect(mock$rdf.sym).toHaveBeenCalledWith('https://neo.graphmetrix.net/node/a_paragraph')
   })
 })
 

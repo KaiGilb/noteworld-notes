@@ -13,8 +13,9 @@ export default defineConfig({
       formats: ['es']
     },
     rollupOptions: {
-      // vue is external — consumers supply it via their own Vue install.
-      external: ['vue'],
+      // vue and twinpod-client are external — consumers supply them.
+      // twinpod-client must be external so only one ur singleton exists at runtime.
+      external: ['vue', '@kaigilb/twinpod-client'],
       output: {
         globals: { vue: 'Vue' }
       }

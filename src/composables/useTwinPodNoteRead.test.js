@@ -1,10 +1,11 @@
 // UNIT_TYPE=Hook
 //
 // Tests for useTwinPodNoteRead. The composable reads a note's current text
-// from TwinPod by calling `window.solid.session.fetch` directly (NOT
-// `ur.fetchAndSaveTurtle`) — see memory note `project_twinpod_read_pattern`:
-// the TwinPod GET with the hypergraph header returns the full pod knowledge
-// graph, so we use `session.fetch` to get the actual resource Turtle.
+// from TwinPod by calling `ur.fetchResourceTurtle` (NOT window.solid.session.fetch
+// directly) — ur.fetchResourceTurtle wraps session.fetch without the hypergraph
+// header so TwinPod returns the actual resource Turtle rather than the full
+// pod knowledge graph. Header correctness is tested in twinpod-client's
+// util-rdf.test.js; this suite focuses on the composable's own logic.
 //
 // The parsed Turtle is loaded into a temp rdflib graph, then queried for all
 // statements with the configured text predicate. TwinPod preserves state
@@ -13,10 +14,10 @@
 // cache is how an optimistic-create new note still shows content after an
 // immediate reload before the server has observed the first save.
 
-import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 
 // Hoisted mocks so `vi.mock` can reference them (factory runs before imports).
-const { mockSessionFetch, mockGraph, mockParse, mockSym, mockStore } = vi.hoisted(() => {
+const { mockFetchResourceTurtle, mockGraph, mockParse, mockSym, mockStore } = vi.hoisted(() => {
   // Each call to `ur.$rdf.graph()` returns a fresh object that carries its own
   // `statementsMatching` spy — lets tests decide what a query returns per-run.
   const makeStore = () => ({
@@ -24,7 +25,7 @@ const { mockSessionFetch, mockGraph, mockParse, mockSym, mockStore } = vi.hoiste
   })
   const store = { current: makeStore() }
   return {
-    mockSessionFetch: vi.fn(),
+    mockFetchResourceTurtle: vi.fn(),
     mockGraph: vi.fn(() => store.current),
     mockParse: vi.fn(),
     mockSym: vi.fn((val) => ({ value: val, termType: 'NamedNode' })),
@@ -34,6 +35,7 @@ const { mockSessionFetch, mockGraph, mockParse, mockSym, mockStore } = vi.hoiste
 
 vi.mock('@kaigilb/twinpod-client', () => ({
   ur: {
+    fetchResourceTurtle: (...args) => mockFetchResourceTurtle(...args),
     $rdf: {
       graph: (...args) => mockGraph(...args),
       parse: (...args) => mockParse(...args),
@@ -53,21 +55,16 @@ function makeStatement(value) {
   return { object: { value } }
 }
 
-// Minimal Response shim matching what the source reads: `ok`, `status`, `text()`.
+// Minimal response shim: ur.fetchResourceTurtle resolves to { ok, status, turtle }.
 function makeResponse({ ok = true, status = 200, turtle = '' } = {}) {
-  return {
-    ok,
-    status,
-    text: async () => turtle
-  }
+  return { ok, status, turtle }
 }
 
-// Default: happy-path fetch returns empty turtle; tempGraph returns one
-// statement with the configured text predicate (value = 'loaded text') and
-// nothing for the GMX predicate.
+// Default: happy-path — ur.fetchResourceTurtle resolves with empty Turtle;
+// tempGraph returns one statement with the configured text predicate.
 function installDefaultHappyPath() {
-  mockSessionFetch.mockReset()
-  mockSessionFetch.mockResolvedValue(makeResponse({ turtle: '<>.' }))
+  mockFetchResourceTurtle.mockReset()
+  mockFetchResourceTurtle.mockResolvedValue(makeResponse({ turtle: '<>.' }))
 
   mockStore.current = {
     statementsMatching: vi.fn((_s, predObj) => {
@@ -78,10 +75,6 @@ function installDefaultHappyPath() {
 }
 
 beforeEach(() => {
-  // Source calls window.solid.session.fetch — install a controllable stub.
-  if (!globalThis.window) globalThis.window = {}
-  window.solid = { session: { fetch: (...args) => mockSessionFetch(...args) } }
-
   // localStorage is available via jsdom; clear between tests so cache hits are
   // intentional per test.
   try { localStorage.clear() } catch { /* ignore */ }
@@ -90,10 +83,6 @@ beforeEach(() => {
   mockParse.mockClear()
   mockSym.mockClear()
   installDefaultHappyPath()
-})
-
-afterEach(() => {
-  delete window.solid
 })
 
 describe('useTwinPodNoteRead — initial state', () => {
@@ -112,16 +101,14 @@ describe('useTwinPodNoteRead — initial state', () => {
 })
 
 describe('useTwinPodNoteRead — success', () => {
-  // Spec: F.Edit_Note — loads resource via direct session.fetch with Accept + no-cache headers.
-  // Memory (project_twinpod_read_pattern): bypasses TwinPod's hypergraph header path.
-  test('calls window.solid.session.fetch with the resource URL', async () => {
+  // Spec: F.Edit_Note — loads resource via ur.fetchResourceTurtle (no hypergraph header).
+  // Regression guard (5.2.0): header correctness (Accept, Cache-Control, no hypergraph)
+  // is tested in twinpod-client/src/util-rdf.test.js for ur.fetchResourceTurtle.
+  test('calls ur.fetchResourceTurtle with the resource URL', async () => {
     const { loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
-    expect(mockSessionFetch).toHaveBeenCalledTimes(1)
-    expect(mockSessionFetch.mock.calls[0][0]).toBe(NOTE_URL)
-    const init = mockSessionFetch.mock.calls[0][1]
-    expect(init.headers.Accept).toBe('text/turtle')
-    expect(init.headers['Cache-Control']).toBe('max-age=0')
+    expect(mockFetchResourceTurtle).toHaveBeenCalledTimes(1)
+    expect(mockFetchResourceTurtle).toHaveBeenCalledWith(NOTE_URL)
   })
 
   // Spec: F.Edit_Note — current text is the last statement in temporal serialisation order.
@@ -190,6 +177,19 @@ describe('useTwinPodNoteRead — success', () => {
     const value = await loadNote(NOTE_URL)
     expect(value).toBe('gmx text')
   })
+
+  // Regression guard (5.2.0): the composable must delegate to ur.fetchResourceTurtle —
+  // never call window.solid.session.fetch directly. Any revert to direct session.fetch
+  // would bypass ur's header management and fail this guard.
+  test('never calls window.solid.session.fetch directly — ur.fetchResourceTurtle only (5.2.0 guard)', async () => {
+    const windowSpy = vi.fn()
+    if (!globalThis.window) globalThis.window = {}
+    globalThis.window.solid = { session: { fetch: windowSpy } }
+    const { loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    expect(windowSpy).not.toHaveBeenCalled()
+    delete globalThis.window.solid
+  })
 })
 
 describe('useTwinPodNoteRead — state history edge cases', () => {
@@ -251,7 +251,7 @@ describe('useTwinPodNoteRead — input validation', () => {
     const value = await loadNote('')
     expect(value).toBeNull()
     expect(error.value?.type).toBe('invalid-input')
-    expect(mockSessionFetch).not.toHaveBeenCalled()
+    expect(mockFetchResourceTurtle).not.toHaveBeenCalled()
   })
 
   test('returns null and sets error when noteResourceUrl is null', async () => {
@@ -259,13 +259,13 @@ describe('useTwinPodNoteRead — input validation', () => {
     const value = await loadNote(null)
     expect(value).toBeNull()
     expect(error.value?.type).toBe('invalid-input')
-    expect(mockSessionFetch).not.toHaveBeenCalled()
+    expect(mockFetchResourceTurtle).not.toHaveBeenCalled()
   })
 })
 
 describe('useTwinPodNoteRead — not found', () => {
-  test('sets error.type to not-found when session.fetch returns 404', async () => {
-    mockSessionFetch.mockResolvedValueOnce(makeResponse({ ok: false, status: 404 }))
+  test('sets error.type to not-found when ur.fetchResourceTurtle returns 404', async () => {
+    mockFetchResourceTurtle.mockResolvedValueOnce(makeResponse({ ok: false, status: 404 }))
     const { error, loadNote } = useTwinPodNoteRead()
     const value = await loadNote(NOTE_URL)
     expect(value).toBeNull()
@@ -275,22 +275,22 @@ describe('useTwinPodNoteRead — not found', () => {
 
 describe('useTwinPodNoteRead — HTTP error', () => {
   test('sets error.type to http on non-ok non-404 response', async () => {
-    mockSessionFetch.mockResolvedValueOnce(makeResponse({ ok: false, status: 403 }))
+    mockFetchResourceTurtle.mockResolvedValueOnce(makeResponse({ ok: false, status: 403 }))
     const { error, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(error.value?.type).toBe('http')
     expect(error.value?.status).toBe(403)
   })
 
-  test('sets error.type to network when fetch rejects', async () => {
-    mockSessionFetch.mockRejectedValueOnce(new Error('Failed to fetch'))
+  test('sets error.type to network when ur.fetchResourceTurtle rejects', async () => {
+    mockFetchResourceTurtle.mockRejectedValueOnce(new Error('Failed to fetch'))
     const { error, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(error.value?.type).toBe('network')
   })
 
   test('loading is false after error', async () => {
-    mockSessionFetch.mockRejectedValueOnce(new Error('boom'))
+    mockFetchResourceTurtle.mockRejectedValueOnce(new Error('boom'))
     const { loading, loadNote } = useTwinPodNoteRead()
     await loadNote(NOTE_URL)
     expect(loading.value).toBe(false)
@@ -298,9 +298,9 @@ describe('useTwinPodNoteRead — HTTP error', () => {
 })
 
 describe('useTwinPodNoteRead — loading transition', () => {
-  test('loading is true while session.fetch is in progress', async () => {
+  test('loading is true while ur.fetchResourceTurtle is in progress', async () => {
     let resolveFetch
-    mockSessionFetch.mockImplementationOnce(() => new Promise(r => {
+    mockFetchResourceTurtle.mockImplementationOnce(() => new Promise(r => {
       resolveFetch = () => r(makeResponse({ turtle: '<>.' }))
     }))
     const { loading, loadNote } = useTwinPodNoteRead()
@@ -309,5 +309,46 @@ describe('useTwinPodNoteRead — loading transition', () => {
     resolveFetch()
     await promise
     expect(loading.value).toBe(false)
+  })
+})
+
+describe('useTwinPodNoteRead — Turtle parsing', () => {
+  // Spec: F.Edit_Note — the Turtle returned by ur.fetchResourceTurtle must be parsed
+  // into a fresh temp graph (not ur.rdfStore) so the global store is not polluted
+  // with per-note Turtle. ur.$rdf.parse must be called with:
+  //   (turtleString, tempGraph, baseUri, 'text/turtle')
+  test('parses the fetched Turtle into a temp graph with the note URL as base', async () => {
+    const TURTLE_BODY = '<> a <https://neo.graphmetrix.net/node/a_paragraph> .'
+    mockFetchResourceTurtle.mockResolvedValueOnce(makeResponse({ turtle: TURTLE_BODY }))
+    const { loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    expect(mockParse).toHaveBeenCalledTimes(1)
+    expect(mockParse).toHaveBeenCalledWith(TURTLE_BODY, expect.any(Object), NOTE_URL, 'text/turtle')
+  })
+
+  test('creates a fresh temp graph via ur.$rdf.graph() on each load call', async () => {
+    const { loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    await loadNote(NOTE_URL)
+    // Two calls to loadNote → two temp graphs
+    expect(mockGraph).toHaveBeenCalledTimes(2)
+  })
+
+  // Regression guard (5.2.1 blank-node subject fix):
+  // TwinPod may serialise notes where the text literal hangs off a blank-node
+  // subject rather than a named URI. The query must use `null` as the first
+  // argument to `statementsMatching` to match any subject (NamedNode or
+  // BlankNode). A regression to `statementsMatching(ur.$rdf.sym(noteUri), ...)`
+  // would miss blank-node subjects and return empty text.
+  //
+  // We guard this by verifying that `statementsMatching` is called with `null`
+  // (not a non-null NamedNode) as its subject argument.
+  test('calls statementsMatching with null as subject (5.2.1 blank-node subject fix)', async () => {
+    const { loadNote } = useTwinPodNoteRead()
+    await loadNote(NOTE_URL)
+    // statementsMatching must be called at least once with null as subject.
+    const calls = mockStore.current.statementsMatching.mock.calls
+    const anyNullSubject = calls.some(c => c[0] === null)
+    expect(anyNullSubject).toBe(true)
   })
 })

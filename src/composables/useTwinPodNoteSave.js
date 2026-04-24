@@ -14,6 +14,13 @@
  * The returned Promise still resolves to the eventual PUT outcome so existing
  * await-style callers keep working.
  *
+ * HTTP method — 5.1.1 fix:
+ * Uses `method: 'PUT'` (full-replace). PATCH text/turtle is not a valid Solid
+ * operation — the real pod responds 401 "session expired" when PATCH is used
+ * with Content-Type: text/turtle. PUT matches Create's behaviour and the
+ * "build whole Turtle document on every save" model this composable already
+ * follows.
+ *
  * Coalescing — last-write-wins: at most one PUT is in flight per composable
  * instance plus at most one queued. Rapid saves drop their text into the
  * queued slot, replacing whatever was waiting; only the most recent text is
@@ -21,7 +28,7 @@
  *
  * @param {object} [options]
  * @param {string} [options.predicateUri='http://schema.org/text'] - Predicate for the note body.
- * @param {string} [options.typeUri='http://schema.org/Note'] - RDF type for the Note.
+ * @param {string} [options.typeUri='https://neo.graphmetrix.net/node/a_paragraph'] - RDF type for the Note.
  *
  * @returns {{
  *   saving: import('vue').Ref<boolean>,
@@ -40,19 +47,28 @@ import { ref } from 'vue'
 import { ur } from '@kaigilb/twinpod-client'
 
 const DEFAULT_TEXT_PREDICATE = 'http://schema.org/text'
-const DEFAULT_TYPE_URI = 'http://schema.org/Note'
+const DEFAULT_TYPE_URI = 'https://neo.graphmetrix.net/node/a_paragraph'
 
 function escapeTurtleString(str) {
+  // Escape only the characters that Turtle string syntax requires: backslash,
+  // double-quote, and the three ASCII control characters that would break the
+  // single-line string literal.
+  //
+  // Non-ASCII characters (æøå, emoji, …) are passed through as raw UTF-8 bytes.
+  // Earlier versions escaped these as \uXXXX; that caused TwinPod's server-side
+  // Turtle parser to truncate the stored string at the first escape sequence,
+  // silently losing all text from that character onwards. Raw UTF-8 does not
+  // trigger that bug and is valid per Turtle 1.1 §3.3.
+  //
+  // unescapeTurtleString in the read composables is retained so any notes saved
+  // with the old \uXXXX encoding are still decoded correctly.
   let result = ''
   for (const char of str) {
-    const code = char.codePointAt(0)
     if (char === '\\') { result += '\\\\'; continue }
-    if (char === '"') { result += '\\"'; continue }
-    if (char === '\n') { result += '\\n'; continue }
-    if (char === '\r') { result += '\\r'; continue }
-    if (char === '\t') { result += '\\t'; continue }
-    if (code > 0xFFFF) { result += `\\U${code.toString(16).padStart(8, '0').toUpperCase()}`; continue }
-    if (code > 0x7E) { result += `\\u${code.toString(16).padStart(4, '0').toUpperCase()}`; continue }
+    if (char === '"')  { result += '\\"';  continue }
+    if (char === '\n') { result += '\\n';  continue }
+    if (char === '\r') { result += '\\r';  continue }
+    if (char === '\t') { result += '\\t';  continue }
     result += char
   }
   return result
@@ -71,9 +87,16 @@ export function useTwinPodNoteSave({ predicateUri = DEFAULT_TEXT_PREDICATE, type
   async function runPut(noteResourceUrl, text) {
     try {
       const safeText = text.trim() !== '' ? text : ' '
-      const turtle = `@prefix schema: <http://schema.org/> .\n_:t1 a schema:Note ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
+      // Use the resource URI as the Turtle subject — not a blank node.
+      // TwinPod's search index associates rdf:type with the resource URI; a blank
+      // node subject leaves the note URI untyped so it never appears in search results.
+      const turtle = `@prefix neo: <https://neo.graphmetrix.net/node/> .\n<${noteResourceUrl}> a neo:a_paragraph ; <${predicateUri}> "${escapeTurtleString(safeText)}" .\n`
 
-      const result = await ur.uploadTurtleToResource(noteResourceUrl, turtle, { returnResponse: true })
+      // method: 'PUT' — full-replace semantics match our "build complete Turtle
+      // document" pattern. Default PATCH with Content-Type: text/turtle is not
+      // a valid Solid operation (PATCH needs application/sparql-update or n3),
+      // and this pod misreports that as 401 "session expired". See Create.
+      const result = await ur.uploadTurtleToResource(noteResourceUrl, turtle, { method: 'PUT', returnResponse: true })
 
       if (!result.ok) {
         error.value = { type: 'http', status: result.status, message: `Save failed with HTTP ${result.status}` }

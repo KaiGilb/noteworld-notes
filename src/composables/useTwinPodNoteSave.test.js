@@ -52,12 +52,12 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(mockUploadTurtleToResource.mock.calls[0][0]).toBe(NOTE_URL)
   })
 
-  test('Turtle body contains schema prefix and Note type', async () => {
+  test('Turtle body contains neo prefix and a_paragraph type', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'hello')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('@prefix schema:')
-    expect(turtle).toContain('schema:Note')
+    expect(turtle).toContain('@prefix neo:')
+    expect(turtle).toContain('a_paragraph')
   })
 
   test('Turtle body contains the text value', async () => {
@@ -89,22 +89,48 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(turtle).toContain('\\\\')
   })
 
-  test('escapes non-ASCII characters as \\uXXXX', async () => {
+  test('escapes carriage returns (\\r) in text', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'a\rb')
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain('\\r')
+    expect(turtle).not.toMatch(/a\rb/)
+  })
+
+  test('escapes tab characters (\\t) in text', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'col1\tcol2')
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain('\\t')
+    expect(turtle).not.toMatch(/col1\tcol2/)
+  })
+
+  // 5.2.5 fix — TwinPod's server-side Turtle parser truncated stored strings at
+  // the first \uXXXX escape sequence, silently losing all text from that character
+  // onwards. Non-ASCII characters are now passed through as raw UTF-8 bytes, which
+  // is valid per Turtle 1.1 §3.3 and accepted by the current demo pod without 422.
+  test('passes non-ASCII characters (æøå) as raw UTF-8, not \\uXXXX escapes', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'æøå')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('\\u00E6')
-    expect(turtle).toContain('\\u00F8')
-    expect(turtle).toContain('\\u00E5')
-    expect(turtle).not.toContain('æ')
+    // Raw characters must appear in the Turtle body.
+    expect(turtle).toContain('æ')
+    expect(turtle).toContain('ø')
+    expect(turtle).toContain('å')
+    // \uXXXX escapes must NOT be present — they trigger the TwinPod truncation bug.
+    expect(turtle).not.toContain('\\u00E6')
+    expect(turtle).not.toContain('\\u00F8')
+    expect(turtle).not.toContain('\\u00E5')
   })
 
-  test('escapes em dash and other BMP Unicode as \\uXXXX', async () => {
+  // 5.2.5 fix — same raw UTF-8 rule applies to all non-ASCII BMP characters.
+  test('passes em dash and other BMP Unicode as raw UTF-8, not \\uXXXX escapes', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'a — b')
     const turtle = mockUploadTurtleToResource.mock.calls[0][1]
-    expect(turtle).toContain('\\u2014')
-    expect(turtle).not.toContain('—')
+    // Raw em dash must appear; \u2014 must NOT appear.
+    expect(turtle).toContain('—')
+    expect(turtle).not.toContain('\\u2014')
   })
 
   test('uses custom predicateUri when provided', async () => {
@@ -114,10 +140,36 @@ describe('useTwinPodNoteSave — Turtle building', () => {
     expect(turtle).toContain('<https://example.com/body>')
   })
 
-  test('passes returnResponse: true to uploadTurtleToResource', async () => {
+  // 5.2.1 regression guard — blank-node subject (_:t1) prevented TwinPod from
+  // indexing saved notes in search results. The resource URI must be the Turtle subject.
+  test('uses the note URL as the Turtle subject, not a blank node (5.2.1 regression guard)', async () => {
     const { saveNote } = useTwinPodNoteSave()
     await saveNote(NOTE_URL, 'hello')
-    expect(mockUploadTurtleToResource.mock.calls[0][2]).toEqual({ returnResponse: true })
+    const turtle = mockUploadTurtleToResource.mock.calls[0][1]
+    expect(turtle).toContain(`<${NOTE_URL}>`)
+    expect(turtle).not.toContain('_:')
+  })
+
+  // 5.1.1 — PUT (full-replace) instead of the library default PATCH.
+  // PATCH + Content-Type: text/turtle is not a valid Solid operation; the
+  // real pod responds 401 on that combo. PUT matches Create.
+  test('passes method: PUT and returnResponse: true to uploadTurtleToResource', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'hello')
+    expect(mockUploadTurtleToResource.mock.calls[0][2]).toEqual({ method: 'PUT', returnResponse: true })
+  })
+
+  // 5.1.1 regression guard — the real pod treats PATCH text/turtle as a
+  // malformed Solid operation and returns 401 "session expired", silently
+  // breaking every save. If someone ever drops or rewrites the method option
+  // and accidentally reverts to the library default (PATCH), this test fails.
+  // Spec: V.Speed_Save_Note — a save must actually persist; a 401 defeats that.
+  test('never passes method: PATCH (regression guard for the 5.1.0 defect)', async () => {
+    const { saveNote } = useTwinPodNoteSave()
+    await saveNote(NOTE_URL, 'hi')
+    const opts = mockUploadTurtleToResource.mock.calls[0][2]
+    expect(opts?.method).not.toBe('PATCH')
+    expect(opts?.method).toBe('PUT')
   })
 })
 
